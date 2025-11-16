@@ -30,6 +30,7 @@ import {
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
+  CommonActions,
   DefaultTheme,
   NavigationContainer,
   useFocusEffect,
@@ -175,6 +176,8 @@ const palette = {
   inkMuted: "#7A736A",
   border: "#E7D7BC",
   white: "#FFFFFF",
+  danger: "#B44337",
+  dangerDark: "#8C2C22",
 };
 
 const theme = {
@@ -2648,6 +2651,54 @@ function GoldButton({
     </Pressable>
   );
 }
+
+function DeleteAccountButton({ loading, onPress }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={loading}
+      style={({ pressed }) => [
+        deleteAccountButtonStyles.base,
+        pressed && !loading && { opacity: 0.85 },
+        loading && deleteAccountButtonStyles.disabled,
+      ]}
+    >
+      {loading && (
+        <ActivityIndicator size="small" color={palette.white} style={{ marginRight: 8 }} />
+      )}
+      <Text style={deleteAccountButtonStyles.label}>
+        {loading ? "Deleting…" : "Delete Account"}
+      </Text>
+    </Pressable>
+  );
+}
+
+const deleteAccountButtonStyles = StyleSheet.create({
+  base: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    alignSelf: "stretch",
+    marginTop: theme.space(1.5),
+    paddingVertical: theme.space(1.25),
+    borderRadius: theme.radius,
+    backgroundColor: palette.danger,
+    borderWidth: 1,
+    borderColor: palette.dangerDark,
+    shadowColor: palette.dangerDark,
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+  },
+  disabled: {
+    opacity: 0.65,
+  },
+  label: {
+    fontFamily: fonts.bodyBold,
+    fontSize: 16,
+    color: palette.white,
+  },
+});
 
 function UpgradeCallout({ title, description, onUpgrade, style, icon = "sparkles-outline" }) {
   const { premiumPriceString, loading, activeAction } = useRevenueCat();
@@ -6001,6 +6052,7 @@ const stylesPremium = StyleSheet.create({
 // ⚙️ Settings screen
 function SettingsScreen({ navigation }) {
   const [feedback, setFeedback] = useState("");
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const handleOpenPremium = useCallback(() => {
     navigation.navigate("Premium");
@@ -6057,6 +6109,55 @@ function SettingsScreen({ navigation }) {
       Alert.alert("Unable to send email", error?.message || "Please try again.");
     }
   }, [feedback]);
+
+  const handleDeleteAccount = useCallback(async () => {
+    setIsDeleting(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("delete-account", {
+        method: "POST",
+      });
+      if (error) {
+        throw error;
+      }
+      if (data?.error) {
+        const errorMessage =
+          typeof data.error === "string" ? data.error : "Unable to delete your account.";
+        throw new Error(errorMessage);
+      }
+      if (!data?.message) {
+        throw new Error("Unexpected response from the server.");
+      }
+
+      await supabase.auth.signOut();
+      navigation.dispatch(
+        CommonActions.reset({
+          index: 0,
+          routes: [{ name: "Login" }],
+        })
+      );
+      Alert.alert("Account deleted", "Your account has been permanently deleted.");
+    } catch (error) {
+      console.log("Delete account error", error?.message || error);
+      Alert.alert(
+        "Unable to delete account",
+        error?.message || "Please check your connection and try again."
+      );
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [navigation]);
+
+  const confirmDeleteAccount = useCallback(() => {
+    if (isDeleting) return;
+    Alert.alert(
+      "Delete account",
+      "Are you sure? This will permanently delete your account and all data.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: handleDeleteAccount },
+      ]
+    );
+  }, [handleDeleteAccount, isDeleting]);
 
   return (
     <GradientBackground>
@@ -6121,6 +6222,14 @@ function SettingsScreen({ navigation }) {
             >
               Send Feedback
             </GoldButton>
+          </SectionCard>
+
+          <SectionCard style={stylesSettings.dangerCard}>
+            <Text style={stylesSettings.dangerTitle}>Delete account</Text>
+            <Text style={stylesSettings.dangerHint}>
+              Permanently remove your profile and all saved data. This action cannot be undone.
+            </Text>
+            <DeleteAccountButton loading={isDeleting} onPress={confirmDeleteAccount} />
           </SectionCard>
         </ScrollView>
       </SafeAreaView>
@@ -6198,6 +6307,20 @@ const stylesSettings = StyleSheet.create({
     color: palette.ink,
     marginBottom: theme.space(1.5),
     textAlignVertical: "top",
+  },
+  dangerCard: {
+    borderColor: palette.danger,
+  },
+  dangerTitle: {
+    fontFamily: fonts.title,
+    fontSize: 18,
+    color: palette.dangerDark,
+    marginBottom: 6,
+  },
+  dangerHint: {
+    fontFamily: fonts.body,
+    fontSize: 14,
+    color: palette.ink,
   },
 });
 
