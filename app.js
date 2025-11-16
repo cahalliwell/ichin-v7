@@ -30,6 +30,7 @@ import {
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
+  CommonActions,
   DefaultTheme,
   NavigationContainer,
   useFocusEffect,
@@ -61,7 +62,7 @@ import Svg, {
   Text as SvgText,
   Circle as SvgCircle,
 } from "react-native-svg";
-import { BarChart } from "react-native-chart-kit";
+import { BarChart as ReBarChart, Bar, CartesianGrid, LabelList, XAxis, YAxis } from "recharts";
 import { createClient } from "@supabase/supabase-js";
 
 let Purchases = null;
@@ -175,6 +176,8 @@ const palette = {
   inkMuted: "#7A736A",
   border: "#E7D7BC",
   white: "#FFFFFF",
+  danger: "#B44337",
+  dangerDark: "#8C2C22",
 };
 
 const theme = {
@@ -1231,27 +1234,77 @@ function CounterRow({ label, value, loading }) {
   );
 }
 
-function HexagonLabel({ cx, cy, value, size = "small", fill = palette.white, stroke = palette.gold }) {
-  const dimension = size === "medium" ? 42 : 32;
-  const scale = dimension / 100;
-  const transform = `translate(${cx - 50 * scale}, ${cy - 50 * scale}) scale(${scale})`;
+function HexLabel({ x = 0, y = 0, width = 0, value }) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue) || numericValue <= 0) {
+    return null;
+  }
+
+  const safeWidth = Math.max(18, width || 0);
+  const hexWidth = Math.min(48, Math.max(26, safeWidth * 0.85));
+  const hexHeight = hexWidth * 0.92;
+  const centerX = x + safeWidth / 2;
+  const offset = 10;
+  const topY = y - hexHeight - offset;
+
+  const points = [
+    [centerX, topY],
+    [centerX + hexWidth / 2, topY + hexHeight / 3],
+    [centerX + hexWidth / 2, topY + (hexHeight * 2) / 3],
+    [centerX, topY + hexHeight],
+    [centerX - hexWidth / 2, topY + (hexHeight * 2) / 3],
+    [centerX - hexWidth / 2, topY + hexHeight / 3],
+  ]
+    .map((pair) => pair.join(","))
+    .join(" ");
+
+  const fontSize = Math.min(16, Math.max(12, hexWidth * 0.32));
 
   return (
-    <G transform={transform}>
-      <Polygon points={HEX_POINTS} fill={fill} stroke={stroke} strokeWidth={4} />
-      <SvgText
-        x={50}
-        y={58}
+    <g>
+      <polygon points={points} fill="#D4AF37" stroke="#8A6F32" strokeWidth={1.6} />
+      <text
+        x={centerX}
+        y={topY + hexHeight / 2 + 1}
         textAnchor="middle"
-        fontSize={size === "medium" ? 40 : 34}
+        dominantBaseline="middle"
+        fill="#3A2F1B"
         fontFamily={fonts.bodyBold}
-        fill={stroke}
+        fontSize={fontSize}
       >
-        {value}
-      </SvgText>
-    </G>
+        {Math.round(numericValue)}
+      </text>
+    </g>
   );
 }
+
+function buildAxisTicks(maxValue = 0, segments = 4) {
+  const safeMax = Math.max(0, Number(maxValue) || 0);
+  if (safeMax === 0) {
+    return [0, 1];
+  }
+
+  const roughStep = Math.max(1, safeMax / segments);
+  const magnitude = 10 ** Math.floor(Math.log10(roughStep));
+  const normalized = roughStep / magnitude;
+  const niceNormalized =
+    normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  const step = niceNormalized * magnitude;
+
+  const ticks = [0];
+  let current = step;
+  while (current < safeMax) {
+    ticks.push(Math.round(current));
+    current += step;
+  }
+  if (ticks[ticks.length - 1] !== Math.ceil(safeMax)) {
+    ticks.push(Math.ceil(safeMax));
+  }
+  return ticks;
+}
+
+const getMaxValue = (items, key) =>
+  items.reduce((max, item) => Math.max(max, Number(item?.[key]) || 0), 0);
 
 function useInsightsChartDimensions(styleRef, minWidth = 200) {
   const { width: windowWidth } = useWindowDimensions();
@@ -1272,29 +1325,6 @@ function WeeklyChart({ data, loading }) {
   const animatedValues = chartData.map((item) => (hasData ? item.readings * progress : 0));
   const { chartWidth, chartHeight } = useInsightsChartDimensions(stylesInsights.barChart);
 
-  const chartConfig = useMemo(
-    () => ({
-      backgroundColor: palette.card,
-      backgroundGradientFrom: palette.card,
-      backgroundGradientTo: palette.card,
-      decimalPlaces: 0,
-      color: (opacity = 1) => palette.gold,
-      fillShadowGradient: palette.gold,
-      fillShadowGradientOpacity: 1,
-      barPercentage: 0.55,
-      propsForBackgroundLines: {
-        stroke: palette.border,
-        strokeDasharray: "",
-      },
-      labelColor: (opacity = 1) => palette.inkMuted,
-      propsForLabels: {
-        fontFamily: fonts.body,
-        fontSize: 12,
-      },
-    }),
-    []
-  );
-
   if (loading) {
     return <ShimmerPlaceholder height={200} style={stylesInsights.chartPlaceholder} />;
   }
@@ -1307,49 +1337,48 @@ function WeeklyChart({ data, loading }) {
     );
   }
 
-  const values = animatedValues;
-  const labels = chartData.map((item) => item?.weekday || "");
-  const chartKitData = {
-    labels,
-    datasets: [
-      {
-        data: values,
-      },
-    ],
-  };
+  const dataset = chartData.map((item, index) => ({
+    weekday: item?.weekday || "",
+    readings: Number(item?.readings) || 0,
+    animatedReadings: animatedValues[index] || 0,
+  }));
+  const weeklyMax = getMaxValue(dataset, "readings");
+  const weeklyTicks = buildAxisTicks(weeklyMax);
+  const weeklyDomainMax = weeklyTicks[weeklyTicks.length - 1] || 1;
 
   return (
-    <BarChart
-      style={stylesInsights.barChart}
-      data={chartKitData}
-      width={chartWidth}
-      height={chartHeight}
-      chartConfig={chartConfig}
-      fromZero
-      withHorizontalLabels={false}
-      withVerticalLabels
-      withInnerLines
-      withHorizontalLines
-      withVerticalLines={false}
-      segments={4}
-      showBarTops={false}
-      showValuesOnTopOfBars={false}
-      yAxisSuffix=""
-      barRadius={12}
-      flatColor
-      renderCustomBarContent={({ index, value, x, y, width: barWidth }) => {
-        if (!chartData[index] || value <= 0) return null;
-        const cy = Math.max(y - 18, 18);
-        return (
-          <HexagonLabel
-            key={`${chartData[index]?.weekday || "day"}-${index}`}
-            cx={x + barWidth / 2}
-            cy={cy}
-            value={Math.round(chartData[index].readings)}
-          />
-        );
-      }}
-    />
+    <View style={[stylesInsights.barChart, { width: chartWidth }]}>
+      <ReBarChart
+        width={chartWidth}
+        height={chartHeight}
+        data={dataset}
+        margin={{ top: 56, right: 12, left: 4, bottom: 8 }}
+        barCategoryGap="24%"
+      >
+        <CartesianGrid stroke={palette.border} vertical={false} strokeDasharray="3 3" />
+        <YAxis
+          ticks={weeklyTicks}
+          domain={[0, weeklyDomainMax]}
+          tick={{ fill: palette.inkMuted, fontFamily: fonts.body, fontSize: 11 }}
+          axisLine={false}
+          tickLine={false}
+          width={32}
+          allowDecimals={false}
+        />
+        <XAxis
+          dataKey="weekday"
+          interval={0}
+          minTickGap={6}
+          tick={{ fill: palette.inkMuted, fontFamily: fonts.body, fontSize: 12 }}
+          axisLine={false}
+          tickLine={false}
+          tickMargin={12}
+        />
+        <Bar dataKey="animatedReadings" fill={palette.gold} radius={[12, 12, 0, 0]} maxBarSize={38}>
+          <LabelList dataKey="readings" content={<HexLabel />} />
+        </Bar>
+      </ReBarChart>
+    </View>
   );
 }
 
@@ -1361,29 +1390,6 @@ function MonthlyChart({ data, loading }) {
   const { chartWidth, chartHeight } = useInsightsChartDimensions(
     stylesInsights.barChartTall,
     220
-  );
-
-  const chartConfig = useMemo(
-    () => ({
-      backgroundColor: palette.card,
-      backgroundGradientFrom: palette.card,
-      backgroundGradientTo: palette.card,
-      decimalPlaces: 0,
-      color: (opacity = 1) => palette.gold,
-      fillShadowGradient: palette.gold,
-      fillShadowGradientOpacity: 1,
-      barPercentage: 0.6,
-      propsForBackgroundLines: {
-        stroke: palette.border,
-        strokeDasharray: "",
-      },
-      labelColor: (opacity = 1) => palette.inkMuted,
-      propsForLabels: {
-        fontFamily: fonts.body,
-        fontSize: 12,
-      },
-    }),
-    []
   );
 
   if (loading) {
@@ -1398,50 +1404,49 @@ function MonthlyChart({ data, loading }) {
     );
   }
 
-  const values = animatedValues;
-  const labels = chartData.map((item) => item?.month || "");
-  const chartKitData = {
-    labels,
-    datasets: [
-      {
-        data: values,
-      },
-    ],
-  };
+  const dataset = chartData.map((item, index) => ({
+    month: item?.month || "",
+    readings: Number(item?.readings) || 0,
+    animatedReadings: animatedValues[index] || 0,
+  }));
+  const monthlyMax = getMaxValue(dataset, "readings");
+  const monthlyTicks = buildAxisTicks(monthlyMax);
+  const monthlyDomainMax = monthlyTicks[monthlyTicks.length - 1] || 1;
 
   return (
-    <BarChart
-      style={stylesInsights.barChartTall}
-      data={chartKitData}
-      width={chartWidth}
-      height={chartHeight}
-      chartConfig={chartConfig}
-      fromZero
-      withHorizontalLabels={false}
-      withVerticalLabels
-      withInnerLines
-      withHorizontalLines
-      withVerticalLines={false}
-      segments={5}
-      showBarTops={false}
-      showValuesOnTopOfBars={false}
-      yAxisSuffix=""
-      barRadius={12}
-      flatColor
-      renderCustomBarContent={({ index, value, x, y, width: barWidth }) => {
-        if (!chartData[index] || value <= 0) return null;
-        const cy = Math.max(y - 18, 18);
-        return (
-          <HexagonLabel
-            key={`${chartData[index]?.month || "month"}-${index}`}
-            cx={x + barWidth / 2}
-            cy={cy}
-            value={Math.round(chartData[index].readings)}
-            size="small"
-          />
-        );
-      }}
-    />
+    <View style={[stylesInsights.barChartTall, { width: chartWidth }]}>
+      <ReBarChart
+        width={chartWidth}
+        height={chartHeight}
+        data={dataset}
+        margin={{ top: 64, right: 12, left: 6, bottom: 12 }}
+        barCategoryGap="18%"
+      >
+        <CartesianGrid stroke={palette.border} vertical={false} strokeDasharray="3 3" />
+        <YAxis
+          ticks={monthlyTicks}
+          domain={[0, monthlyDomainMax]}
+          tick={{ fill: palette.inkMuted, fontFamily: fonts.body, fontSize: 11 }}
+          axisLine={false}
+          tickLine={false}
+          width={32}
+          allowDecimals={false}
+        />
+        <XAxis
+          dataKey="month"
+          interval={0}
+          minTickGap={4}
+          tick={{ fill: palette.inkMuted, fontFamily: fonts.body, fontSize: 11 }}
+          axisLine={false}
+          tickLine={false}
+          height={32}
+          tickMargin={10}
+        />
+        <Bar dataKey="animatedReadings" fill={palette.gold} radius={[12, 12, 0, 0]} maxBarSize={32}>
+          <LabelList dataKey="readings" content={<HexLabel />} />
+        </Bar>
+      </ReBarChart>
+    </View>
   );
 }
 
@@ -1473,29 +1478,6 @@ function TopCastsChart({ data, loading }) {
   );
   const { chartWidth, chartHeight } = useInsightsChartDimensions(stylesInsights.barChart);
 
-  const chartConfig = useMemo(
-    () => ({
-      backgroundColor: palette.card,
-      backgroundGradientFrom: palette.card,
-      backgroundGradientTo: palette.card,
-      decimalPlaces: 0,
-      color: (opacity = 1) => palette.gold,
-      fillShadowGradient: palette.gold,
-      fillShadowGradientOpacity: 1,
-      barPercentage: 0.55,
-      propsForBackgroundLines: {
-        stroke: palette.border,
-        strokeDasharray: "",
-      },
-      labelColor: (opacity = 1) => palette.ink,
-      propsForLabels: {
-        fontFamily: fonts.bodyBold,
-        fontSize: 12,
-      },
-    }),
-    []
-  );
-
   if (loading) {
     return <ShimmerPlaceholder height={220} style={stylesInsights.chartPlaceholder} />;
   }
@@ -1510,51 +1492,49 @@ function TopCastsChart({ data, loading }) {
     );
   }
 
-  const labels = chartData.map((item) =>
-    item?.hexagram_primary != null ? `Hex ${item.hexagram_primary}` : ""
-  );
-  const chartKitData = {
-    labels,
-    datasets: [
-      {
-        data: animatedValues,
-      },
-    ],
-  };
+  const dataset = chartData.map((item, index) => ({
+    label: item?.hexagram_primary != null ? `Hex ${item.hexagram_primary}` : "",
+    total_casts: Number(item?.total_casts) || 0,
+    animatedCasts: animatedValues[index] || 0,
+  }));
+  const castsMax = getMaxValue(dataset, "total_casts");
+  const castTicks = buildAxisTicks(castsMax);
+  const castDomainMax = castTicks[castTicks.length - 1] || 1;
 
   return (
-    <BarChart
-      style={stylesInsights.barChart}
-      data={chartKitData}
-      width={chartWidth}
-      height={chartHeight}
-      chartConfig={chartConfig}
-      fromZero
-      withHorizontalLabels={false}
-      withVerticalLabels
-      withInnerLines
-      withHorizontalLines
-      withVerticalLines={false}
-      segments={4}
-      showBarTops={false}
-      showValuesOnTopOfBars={false}
-      yAxisSuffix=""
-      barRadius={12}
-      flatColor
-      renderCustomBarContent={({ index, value, x, y, width: barWidth }) => {
-        if (!chartData[index] || value <= 0) return null;
-        const cy = Math.max(y - 18, 18);
-        return (
-          <HexagonLabel
-            key={`top-cast-${chartData[index]?.hexagram_primary ?? index}-${index}`}
-            cx={x + barWidth / 2}
-            cy={cy}
-            value={Math.round(chartData[index].total_casts)}
-            size="small"
-          />
-        );
-      }}
-    />
+    <View style={[stylesInsights.barChart, { width: chartWidth }]}>
+      <ReBarChart
+        width={chartWidth}
+        height={chartHeight}
+        data={dataset}
+        margin={{ top: 56, right: 12, left: 6, bottom: 12 }}
+        barCategoryGap="30%"
+      >
+        <CartesianGrid stroke={palette.border} vertical={false} strokeDasharray="3 3" />
+        <YAxis
+          ticks={castTicks}
+          domain={[0, castDomainMax]}
+          tick={{ fill: palette.inkMuted, fontFamily: fonts.body, fontSize: 11 }}
+          axisLine={false}
+          tickLine={false}
+          width={34}
+          allowDecimals={false}
+        />
+        <XAxis
+          dataKey="label"
+          interval={0}
+          minTickGap={4}
+          tick={{ fill: palette.ink, fontFamily: fonts.bodyBold, fontSize: 12 }}
+          axisLine={false}
+          tickLine={false}
+          height={30}
+          tickMargin={10}
+        />
+        <Bar dataKey="animatedCasts" fill={palette.gold} radius={[12, 12, 0, 0]} maxBarSize={40}>
+          <LabelList dataKey="total_casts" content={<HexLabel />} />
+        </Bar>
+      </ReBarChart>
+    </View>
   );
 }
 
@@ -2648,6 +2628,54 @@ function GoldButton({
     </Pressable>
   );
 }
+
+function DeleteAccountButton({ loading, onPress }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={loading}
+      style={({ pressed }) => [
+        deleteAccountButtonStyles.base,
+        pressed && !loading && { opacity: 0.85 },
+        loading && deleteAccountButtonStyles.disabled,
+      ]}
+    >
+      {loading && (
+        <ActivityIndicator size="small" color={palette.white} style={{ marginRight: 8 }} />
+      )}
+      <Text style={deleteAccountButtonStyles.label}>
+        {loading ? "Deleting…" : "Delete Account"}
+      </Text>
+    </Pressable>
+  );
+}
+
+const deleteAccountButtonStyles = StyleSheet.create({
+  base: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    alignSelf: "stretch",
+    marginTop: theme.space(1.5),
+    paddingVertical: theme.space(1.25),
+    borderRadius: theme.radius,
+    backgroundColor: palette.danger,
+    borderWidth: 1,
+    borderColor: palette.dangerDark,
+    shadowColor: palette.dangerDark,
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+  },
+  disabled: {
+    opacity: 0.65,
+  },
+  label: {
+    fontFamily: fonts.bodyBold,
+    fontSize: 16,
+    color: palette.white,
+  },
+});
 
 function UpgradeCallout({ title, description, onUpgrade, style, icon = "sparkles-outline" }) {
   const { premiumPriceString, loading, activeAction } = useRevenueCat();
@@ -6001,6 +6029,7 @@ const stylesPremium = StyleSheet.create({
 // ⚙️ Settings screen
 function SettingsScreen({ navigation }) {
   const [feedback, setFeedback] = useState("");
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const handleOpenPremium = useCallback(() => {
     navigation.navigate("Premium");
@@ -6057,6 +6086,55 @@ function SettingsScreen({ navigation }) {
       Alert.alert("Unable to send email", error?.message || "Please try again.");
     }
   }, [feedback]);
+
+  const handleDeleteAccount = useCallback(async () => {
+    setIsDeleting(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("delete-account", {
+        method: "POST",
+      });
+      if (error) {
+        throw error;
+      }
+      if (data?.error) {
+        const errorMessage =
+          typeof data.error === "string" ? data.error : "Unable to delete your account.";
+        throw new Error(errorMessage);
+      }
+      if (!data?.message) {
+        throw new Error("Unexpected response from the server.");
+      }
+
+      await supabase.auth.signOut();
+      navigation.dispatch(
+        CommonActions.reset({
+          index: 0,
+          routes: [{ name: "Login" }],
+        })
+      );
+      Alert.alert("Account deleted", "Your account has been permanently deleted.");
+    } catch (error) {
+      console.log("Delete account error", error?.message || error);
+      Alert.alert(
+        "Unable to delete account",
+        error?.message || "Please check your connection and try again."
+      );
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [navigation]);
+
+  const confirmDeleteAccount = useCallback(() => {
+    if (isDeleting) return;
+    Alert.alert(
+      "Delete account",
+      "Are you sure? This will permanently delete your account and all data.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: handleDeleteAccount },
+      ]
+    );
+  }, [handleDeleteAccount, isDeleting]);
 
   return (
     <GradientBackground>
@@ -6121,6 +6199,14 @@ function SettingsScreen({ navigation }) {
             >
               Send Feedback
             </GoldButton>
+          </SectionCard>
+
+          <SectionCard style={stylesSettings.dangerCard}>
+            <Text style={stylesSettings.dangerTitle}>Delete account</Text>
+            <Text style={stylesSettings.dangerHint}>
+              Permanently remove your profile and all saved data. This action cannot be undone.
+            </Text>
+            <DeleteAccountButton loading={isDeleting} onPress={confirmDeleteAccount} />
           </SectionCard>
         </ScrollView>
       </SafeAreaView>
@@ -6198,6 +6284,20 @@ const stylesSettings = StyleSheet.create({
     color: palette.ink,
     marginBottom: theme.space(1.5),
     textAlignVertical: "top",
+  },
+  dangerCard: {
+    borderColor: palette.danger,
+  },
+  dangerTitle: {
+    fontFamily: fonts.title,
+    fontSize: 18,
+    color: palette.dangerDark,
+    marginBottom: 6,
+  },
+  dangerHint: {
+    fontFamily: fonts.body,
+    fontSize: 14,
+    color: palette.ink,
   },
 });
 
